@@ -7,46 +7,68 @@ import requests
 import streamlit as st
 
 st.set_page_config(
-    page_title="Job Matrix Manager V3",
-    page_icon="🌱",
+    page_title="Job Matrix Manager",
     layout="wide",
 )
 
 st.markdown(
     """
 <style>
-.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-div[data-testid="stMetric"] {
-    border: 1px solid rgba(49, 51, 63, 0.18);
-    padding: 0.8rem;
-    border-radius: 0.8rem;
-    background: rgba(250,250,250,0.6);
+.block-container {
+    padding-top: 1rem;
+    padding-bottom: 1.5rem;
+    max-width: 1400px;
 }
-.small-note {font-size: 0.9rem; color: #666;}
+html, body, [class*="css"]  {
+    font-family: Arial, Helvetica, sans-serif;
+}
+div[data-testid="stMetric"] {
+    border: 1px solid #d9dde3;
+    padding: 0.8rem;
+    border-radius: 0.35rem;
+    background: #ffffff;
+    box-shadow: none;
+}
+div[data-testid="stMetric"] label,
+div[data-testid="stMetricValue"] {
+    color: #1f2937;
+}
+.small-note {
+    font-size: 0.86rem;
+    color: #4b5563;
+}
 .summary-box {
     white-space: pre-wrap;
-    border: 1px solid rgba(49, 51, 63, 0.12);
-    border-radius: 0.75rem;
+    border: 1px solid #d9dde3;
+    border-radius: 0.35rem;
     padding: 0.9rem;
-    background: #fafafa;
-    line-height: 1.75;
+    background: #ffffff;
+    line-height: 1.7;
 }
 .grade-box {
     white-space: pre-wrap;
-    border-left: 4px solid rgba(49, 51, 63, 0.2);
-    padding: 0.85rem 1rem;
-    background: rgba(250,250,250,0.8);
-    border-radius: 0.5rem;
-    line-height: 1.75;
+    border: 1px solid #d9dde3;
+    padding: 0.9rem 1rem;
+    background: #ffffff;
+    border-radius: 0.35rem;
+    line-height: 1.7;
+}
+div[data-testid="stExpander"] {
+    border: 1px solid #d9dde3;
+    border-radius: 0.35rem;
+    background: #ffffff;
+}
+h1, h2, h3 {
+    letter-spacing: 0.01em;
 }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-st.title("🌱 Job Matrix Manager V3")
+st.title("Job Matrix Manager")
 st.caption(
-    "部門 × グレードごとの業務概要・グレード概要・KPIを管理し、CSVで部分更新、Supabaseへ履歴保存できます。"
+    "部門・グレード別の業務概要、グレード定義、KPIを管理し、CSV部分更新とSupabaseへの履歴保存に対応しています。"
 )
 
 # =========================
@@ -574,7 +596,7 @@ m2.metric("グレード数", len(GRADE_ORDER))
 m3.metric("管理行数", len(master_df))
 m4.metric("グレード定義数", len(grade_master_df))
 
-st.markdown("## 🔎 フィルター")
+st.markdown("## フィルター")
 c1, c2, c3 = st.columns([1.2, 1, 1.2])
 with c1:
     dept_filter = st.multiselect("部門", options=DEPARTMENTS, default=[])
@@ -600,12 +622,12 @@ st.caption(f"表示件数: {len(filtered_df)} / 全 {len(master_df)} 件")
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     [
-        "📊 一覧",
-        "✏️ 編集",
-        "📥📤 CSV/Excel",
-        "📂 履歴",
-        "📘 グレード定義",
-        "⚙️ 設定",
+        "一覧",
+        "編集",
+        "CSV / Excel",
+        "履歴",
+        "グレード定義",
+        "設定",
     ]
 )
 
@@ -618,7 +640,7 @@ with tab1:
             dept_df = filtered_df[filtered_df["department"] == dept].copy()
             if dept_df.empty:
                 continue
-            with st.expander(f"🏢 {dept}", expanded=False):
+            with st.expander(f"{dept}", expanded=False):
                 st.markdown(
                     f"<div class='small-note'>{DEPARTMENT_DESCRIPTIONS.get(dept, '')}</div>",
                     unsafe_allow_html=True,
@@ -655,7 +677,7 @@ with tab2:
     )
 
     memo = st.text_input("保存メモ", placeholder="例: 人事課と経理課の業務概要を調整")
-    if st.button("💾 編集内容をSupabaseへ保存", type="primary"):
+    if st.button("編集内容をSupabaseへ保存", type="primary"):
         new_master = update_master_from_editor(
             st.session_state.df,
             edited_df.drop(columns=["grade_overview"], errors="ignore"),
@@ -837,7 +859,7 @@ with tab5:
         st.markdown(f"<div class='grade-box'>{row['grade_overview']}</div>", unsafe_allow_html=True)
 
     grade_memo = st.text_input("グレード定義保存メモ", placeholder="例: PDF文言に寄せて修正", key="grade_tab_memo")
-    if st.button("💾 グレード定義を保存", type="primary"):
+    if st.button("グレード定義を保存", type="primary"):
         st.session_state.grade_master = ensure_grade_master(grade_editor)
         save_snapshot(st.session_state.df, st.session_state.grade_master, grade_memo or "grade master update")
         st.success("グレード定義を保存しました。")
