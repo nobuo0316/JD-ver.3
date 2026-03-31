@@ -37,14 +37,6 @@ div[data-testid="stMetricValue"] {
     font-size: 0.86rem;
     color: #4b5563;
 }
-.summary-box {
-    white-space: pre-wrap;
-    border: 1px solid #d9dde3;
-    border-radius: 0.35rem;
-    padding: 0.9rem;
-    background: #ffffff;
-    line-height: 1.7;
-}
 .grade-box {
     white-space: pre-wrap;
     border: 1px solid #d9dde3;
@@ -52,6 +44,18 @@ div[data-testid="stMetricValue"] {
     background: #ffffff;
     border-radius: 0.35rem;
     line-height: 1.7;
+}
+.handout-box {
+    white-space: pre-wrap;
+    border: 1px solid #d9dde3;
+    padding: 1rem 1.1rem;
+    background: #ffffff;
+    border-radius: 0.35rem;
+    line-height: 1.85;
+}
+.doc-section-title {
+    font-weight: 700;
+    margin-top: 0.35rem;
 }
 div[data-testid="stExpander"] {
     border: 1px solid #d9dde3;
@@ -68,7 +72,7 @@ h1, h2, h3 {
 
 st.title("Job Matrix Manager")
 st.caption(
-    "部門・グレード別の業務概要、グレード定義、KPIを管理し、CSV部分更新とSupabaseへの履歴保存に対応しています。"
+    "部門・グレード別の業務概要、グレード定義、KPIを管理し、配布用のWord/PDFを自動出力できます。"
 )
 
 # =========================
@@ -556,6 +560,265 @@ def department_summary(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def split_kpi_items(kpi_text: str) -> list[str]:
+    if pd.isna(kpi_text) or str(kpi_text).strip() == "":
+        return []
+    text = str(kpi_text).replace("\n", "、")
+    parts = [p.strip(" ・-\t") for p in text.replace(",", "、").split("、")]
+    return [p for p in parts if p]
+
+
+def make_handout_dict(row: pd.Series) -> dict:
+    department = str(row.get("department", "")).strip()
+    grade = str(row.get("grade", "")).strip()
+    grade_name = str(row.get("grade_name", "")).strip()
+    role_summary = str(row.get("role_summary", "")).strip()
+    grade_overview = str(row.get("grade_overview", "")).strip()
+    kpi_items = split_kpi_items(str(row.get("kpi", "")))
+
+    return {
+        "title": "配属・職務定義書",
+        "department": department,
+        "position": f"{grade}（{grade_name}）",
+        "job_overview": (
+            f"あなたは{department}に所属し、{role_summary}"
+            if role_summary
+            else f"あなたは{department}に所属し、担当領域の業務を遂行します。"
+        ),
+        "grade_definition": (
+            f"本職位は、{grade_overview}"
+            if grade_overview and not grade_overview.startswith("本職位は")
+            else grade_overview
+        ),
+        "kpi_items": kpi_items,
+        "note": "本定義は、業務内容・組織状況に応じて見直される場合があります。",
+    }
+
+
+def make_handout_text(row: pd.Series) -> str:
+    data = make_handout_dict(row)
+    kpi_text = "\n".join([f"・{item}" for item in data["kpi_items"]]) if data["kpi_items"] else "・別途設定"
+    return (
+        f"【{data['title']}】\n\n"
+        f"■ 所属\n{data['department']}\n\n"
+        f"■ 職位\n{data['position']}\n\n"
+        f"■ 職務概要\n{data['job_overview']}\n\n"
+        f"■ グレード定義\n{data['grade_definition']}\n\n"
+        f"■ 評価指標（KPI）\n{kpi_text}\n\n"
+        f"■ 備考\n{data['note']}"
+    )
+
+
+def dataframe_for_handout_export(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["grade_sort"] = out["grade"].map({g: i for i, g in enumerate(GRADE_ORDER)})
+    return out.sort_values(["department", "grade_sort"]).drop(columns=["grade_sort"])
+
+
+def create_handout_docx_bytes(export_df: pd.DataFrame) -> bytes:
+    try:
+        from docx import Document
+        from docx.enum.section import WD_SECTION
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Pt
+    except Exception as e:
+        raise RuntimeError(
+            "Word出力には python-docx が必要です。requirements.txt に python-docx を追加してください。"
+        ) from e
+
+    def set_cell_shading(cell, fill: str):
+        tc_pr = cell._tc.get_or_add_tcPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:fill"), fill)
+        tc_pr.append(shd)
+
+    def set_cell_margins(cell, top=90, start=100, bottom=90, end=100):
+        tc = cell._tc
+        tc_pr = tc.get_or_add_tcPr()
+        tc_mar = tc_pr.first_child_found_in("w:tcMar")
+        if tc_mar is None:
+            tc_mar = OxmlElement("w:tcMar")
+            tc_pr.append(tc_mar)
+        for margin_name, value in [("top", top), ("start", start), ("bottom", bottom), ("end", end)]:
+            node = tc_mar.find(qn(f"w:{margin_name}"))
+            if node is None:
+                node = OxmlElement(f"w:{margin_name}")
+                tc_mar.append(node)
+            node.set(qn("w:w"), str(value))
+            node.set(qn("w:type"), "dxa")
+
+    doc = Document()
+    section = doc.sections[0]
+    section.top_margin = Pt(42)
+    section.bottom_margin = Pt(42)
+    section.left_margin = Pt(46)
+    section.right_margin = Pt(46)
+
+    styles = doc.styles
+    styles["Normal"].font.name = "Arial"
+    styles["Normal"].font.size = Pt(10.5)
+    styles["Normal"]._element.rPr.rFonts.set(qn("w:eastAsia"), "MS Gothic")
+
+    records = export_df.to_dict(orient="records")
+    for idx, record in enumerate(records):
+        row = pd.Series(record)
+        data = make_handout_dict(row)
+
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = title.add_run(data["title"])
+        run.bold = True
+        run.font.size = Pt(15)
+
+        meta = doc.add_paragraph()
+        meta.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        meta_run = meta.add_run(datetime.now().strftime("作成日: %Y-%m-%d"))
+        meta_run.font.size = Pt(9)
+
+        table = doc.add_table(rows=0, cols=2)
+        table.style = "Table Grid"
+        table.autofit = False
+        table.columns[0].width = Pt(110)
+        table.columns[1].width = Pt(360)
+
+        rows = [
+            ("所属", data["department"]),
+            ("職位", data["position"]),
+            ("職務概要", data["job_overview"]),
+            ("グレード定義", data["grade_definition"]),
+            ("評価指標（KPI）", "\n".join([f"・{item}" for item in data["kpi_items"]]) if data["kpi_items"] else "・別途設定"),
+            ("備考", data["note"]),
+        ]
+
+        for label, value in rows:
+            cells = table.add_row().cells
+            cells[0].text = label
+            cells[1].text = value
+            set_cell_shading(cells[0], "EAF1FB")
+            for c in cells:
+                set_cell_margins(c)
+                for p in c.paragraphs:
+                    for r in p.runs:
+                        r.font.name = "Arial"
+                        r._element.rPr.rFonts.set(qn("w:eastAsia"), "MS Gothic")
+                        r.font.size = Pt(10.5)
+
+        doc.add_paragraph("")
+        sig = doc.add_paragraph()
+        sig.add_run("署名: ____________________    ")
+        sig.add_run("受領日: ____________________")
+
+        if idx != len(records) - 1:
+            doc.add_section(WD_SECTION.NEW_PAGE)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def create_handout_pdf_bytes(export_df: pd.DataFrame) -> bytes:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.pdfbase.pdfmetrics import registerFont
+        from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except Exception as e:
+        raise RuntimeError(
+            "PDF出力には reportlab が必要です。requirements.txt に reportlab を追加してください。"
+        ) from e
+
+    registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
+    registerFont(UnicodeCIDFont("HeiseiMin-W3"))
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=16 * mm,
+        rightMargin=16 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TitleJP",
+        parent=styles["Title"],
+        fontName="HeiseiKakuGo-W5",
+        fontSize=14,
+        leading=18,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#1F2937"),
+        spaceAfter=8,
+    )
+    body_style = ParagraphStyle(
+        "BodyJP",
+        parent=styles["BodyText"],
+        fontName="HeiseiMin-W3",
+        fontSize=10,
+        leading=15,
+        alignment=TA_LEFT,
+        textColor=colors.HexColor("#111827"),
+    )
+    label_style = ParagraphStyle(
+        "LabelJP",
+        parent=body_style,
+        fontName="HeiseiKakuGo-W5",
+    )
+
+    story = []
+    records = export_df.to_dict(orient="records")
+    for idx, record in enumerate(records):
+        row = pd.Series(record)
+        data = make_handout_dict(row)
+        story.append(Paragraph(data["title"], title_style))
+        story.append(Spacer(1, 3 * mm))
+
+        rows = [
+            [Paragraph("所属", label_style), Paragraph(data["department"].replace("\n", "<br/>"), body_style)],
+            [Paragraph("職位", label_style), Paragraph(data["position"], body_style)],
+            [Paragraph("職務概要", label_style), Paragraph(data["job_overview"].replace("\n", "<br/>"), body_style)],
+            [Paragraph("グレード定義", label_style), Paragraph(data["grade_definition"].replace("\n", "<br/>"), body_style)],
+            [
+                Paragraph("評価指標（KPI）", label_style),
+                Paragraph("<br/>".join([f"・{item}" for item in data["kpi_items"]]) if data["kpi_items"] else "・別途設定", body_style),
+            ],
+            [Paragraph("備考", label_style), Paragraph(data["note"], body_style)],
+        ]
+
+        table = Table(rows, colWidths=[34 * mm, 140 * mm], repeatRows=0)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EAF1FB")),
+                    ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#C7D2E0")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#C7D2E0")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ]
+            )
+        )
+        story.append(table)
+        story.append(Spacer(1, 5 * mm))
+        story.append(Paragraph("署名: ____________________　　受領日: ____________________", body_style))
+        if idx != len(records) - 1:
+            story.append(PageBreak())
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 # =========================
 # SESSION
 # =========================
@@ -603,7 +866,7 @@ with c1:
 with c2:
     grade_filter = st.multiselect("グレード", options=GRADE_ORDER, default=[])
 with c3:
-    keyword = st.text_input("キーワード検索", placeholder="業務概要・グレード概要・KPI など")
+    keyword = st.text_input("キーワード検索", placeholder="職務概要・グレード定義・KPI など")
 
 filtered_df = display_master_df.copy()
 if dept_filter:
@@ -620,10 +883,11 @@ filtered_df["grade_sort"] = filtered_df["grade"].map({g: i for i, g in enumerate
 filtered_df = filtered_df.sort_values(["department", "grade_sort"]).drop(columns=["grade_sort"])
 st.caption(f"表示件数: {len(filtered_df)} / 全 {len(master_df)} 件")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     [
         "一覧",
         "編集",
+        "配布用出力",
         "CSV / Excel",
         "履歴",
         "グレード定義",
@@ -647,19 +911,22 @@ with tab1:
                 )
                 for _, row in dept_df.iterrows():
                     st.markdown(f"### {row['grade']} / {row['grade_name']}")
-                    st.write(f"**業務概要**: {row['role_summary']}")
-                    st.write(f"**グレード概要**: {row['grade_overview']}")
-                    st.write(f"**KPI**: {row['kpi']}")
+                    st.markdown(
+                        f"<div class='handout-box'>{make_handout_text(row)}</div>",
+                        unsafe_allow_html=True,
+                    )
                     st.markdown("---")
     else:
-        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+        table_df = filtered_df.copy()
+        table_df["配布用プレビュー"] = table_df.apply(make_handout_text, axis=1)
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
 
     st.markdown("### 部門別サマリー")
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("直接編集")
-    st.write("`業務概要` は 2〜3文程度で入力してください。`グレード概要` は別タブのグレード定義を自動参照します。")
+    st.write("`職務概要` は配布用の書き方を前提にした 2〜3文で入力してください。`グレード定義` は別タブの内容を自動参照します。")
 
     edited_df = st.data_editor(
         filtered_df,
@@ -667,16 +934,16 @@ with tab2:
         hide_index=True,
         num_rows="fixed",
         column_config={
-            "department": st.column_config.TextColumn("部門", disabled=True),
+            "department": st.column_config.TextColumn("所属部門", disabled=True),
             "grade": st.column_config.TextColumn("グレード", disabled=True),
             "grade_name": st.column_config.TextColumn("グレード名"),
-            "role_summary": st.column_config.TextColumn("業務概要（2〜3文）", width="large"),
-            "grade_overview": st.column_config.TextColumn("グレード概要", disabled=True, width="large"),
-            "kpi": st.column_config.TextColumn("KPI", width="medium"),
+            "role_summary": st.column_config.TextColumn("職務概要（2〜3文）", width="large"),
+            "grade_overview": st.column_config.TextColumn("グレード定義", disabled=True, width="large"),
+            "kpi": st.column_config.TextColumn("評価指標（KPI）", width="medium"),
         },
     )
 
-    memo = st.text_input("保存メモ", placeholder="例: 人事課と経理課の業務概要を調整")
+    memo = st.text_input("保存メモ", placeholder="例: 総務課と財務課の配布文面を調整")
     if st.button("編集内容をSupabaseへ保存", type="primary"):
         new_master = update_master_from_editor(
             st.session_state.df,
@@ -687,31 +954,100 @@ with tab2:
         st.success("保存完了")
 
 with tab3:
+    st.subheader("配布用出力")
+    st.write("新人配属時にそのまま渡せる形式で、Word / PDF を出力します。")
+
+    export_mode = st.radio("出力対象", ["1件だけ出力", "フィルター結果をまとめて出力"], horizontal=True)
+
+    export_source_df = dataframe_for_handout_export(filtered_df)
+    selected_export_df = export_source_df.copy()
+
+    if export_mode == "1件だけ出力":
+        options_df = dataframe_for_handout_export(display_master_df)
+        option_map = {
+            f"{r['department']} | {r['grade']} / {r['grade_name']}": idx
+            for idx, r in options_df.reset_index(drop=True).iterrows()
+        }
+        selected_label = st.selectbox("出力する職位", list(option_map.keys()))
+        selected_export_df = options_df.iloc[[option_map[selected_label]]].copy()
+    else:
+        st.caption("現在のフィルター結果を対象に一括出力します。")
+        if selected_export_df.empty:
+            st.warning("フィルター結果が0件です。部門・グレード条件を見直してください。")
+
+    if not selected_export_df.empty:
+        preview_row = selected_export_df.iloc[0]
+        st.markdown("### プレビュー")
+        st.markdown(
+            f"<div class='handout-box'>{make_handout_text(preview_row)}</div>",
+            unsafe_allow_html=True,
+        )
+        if len(selected_export_df) > 1:
+            st.caption(f"このプレビューは {len(selected_export_df)} 件のうち先頭1件です。")
+
+        base_name = (
+            f"job_assignment_{preview_row['department']}_{preview_row['grade']}"
+            if len(selected_export_df) == 1
+            else f"job_assignment_bundle_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+
+        col_docx, col_pdf = st.columns(2)
+        with col_docx:
+            try:
+                docx_bytes = create_handout_docx_bytes(selected_export_df)
+                st.download_button(
+                    "Wordを出力",
+                    data=docx_bytes,
+                    file_name=f"{base_name}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            except Exception as e:
+                st.error(f"Word出力エラー: {e}")
+        with col_pdf:
+            try:
+                pdf_bytes = create_handout_pdf_bytes(selected_export_df)
+                st.download_button(
+                    "PDFを出力",
+                    data=pdf_bytes,
+                    file_name=f"{base_name}.pdf",
+                    mime="application/pdf",
+                )
+            except Exception as e:
+                st.error(f"PDF出力エラー: {e}")
+
+with tab4:
     st.subheader("CSV / Excel 入出力")
 
-    dl1, dl2, dl3, dl4 = st.columns(4)
+    dl1, dl2, dl3, dl4, dl5 = st.columns(5)
     with dl1:
         st.download_button(
             "現在データをCSV出力",
             data=dataframe_to_csv_bytes(st.session_state.df),
-            file_name="job_matrix_v3_export.csv",
+            file_name="job_matrix_v4_export.csv",
             mime="text/csv",
         )
     with dl2:
         st.download_button(
             "現在データをExcel出力",
             data=dataframe_to_excel_bytes(st.session_state.df, st.session_state.grade_master),
-            file_name="job_matrix_v3_export.xlsx",
+            file_name="job_matrix_v4_export.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     with dl3:
         st.download_button(
-            "業務マスタ空テンプレートCSV",
-            data=minimal_template_csv_bytes(),
-            file_name="job_matrix_v3_template.csv",
+            "グレード定義CSV出力",
+            data=grade_master_to_csv_bytes(st.session_state.grade_master),
+            file_name="grade_master_v4_export.csv",
             mime="text/csv",
         )
     with dl4:
+        st.download_button(
+            "業務マスタ空テンプレートCSV",
+            data=minimal_template_csv_bytes(),
+            file_name="job_matrix_v4_template.csv",
+            mime="text/csv",
+        )
+    with dl5:
         st.download_button(
             "グレード定義テンプレートCSV",
             data=minimal_grade_template_csv_bytes(),
@@ -799,7 +1135,7 @@ with tab3:
     else:
         st.info("まだグレード定義CSV更新ログはありません。")
 
-with tab4:
+with tab5:
     st.subheader("保存履歴")
     try:
         history = load_history()
@@ -837,9 +1173,9 @@ with tab4:
                         st.session_state.grade_master = ensure_grade_master(hist_grade_master)
                         st.success("復元しました。必要なら編集タブ等で再保存してください。")
 
-with tab5:
+with tab6:
     st.subheader("グレード定義")
-    st.write("ここで各グレードの説明欄を管理します。一覧タブ・編集タブの `グレード概要` はこの内容を引用表示します。")
+    st.write("ここで各グレードの説明欄を管理します。一覧・編集・配布用出力の `グレード定義` はこの内容を引用表示します。")
 
     grade_editor = st.data_editor(
         grade_master_df,
@@ -849,7 +1185,7 @@ with tab5:
         column_config={
             "grade": st.column_config.TextColumn("グレード", disabled=True),
             "grade_name": st.column_config.TextColumn("グレード名"),
-            "grade_overview": st.column_config.TextColumn("グレード概要", width="large"),
+            "grade_overview": st.column_config.TextColumn("グレード定義", width="large"),
         },
     )
 
@@ -864,7 +1200,7 @@ with tab5:
         save_snapshot(st.session_state.df, st.session_state.grade_master, grade_memo or "grade master update")
         st.success("グレード定義を保存しました。")
 
-with tab6:
+with tab7:
     st.subheader("設定 / 初期化")
     st.write("必要に応じて初期データへ戻せます。")
     if st.button("初期データに戻す"):
@@ -879,6 +1215,12 @@ with tab6:
     st.code(
         'SUPABASE_URL = "https://xxxx.supabase.co"\nSUPABASE_KEY = "anon public key"',
         language="toml",
+    )
+
+    st.markdown("### requirements.txt 追記推奨")
+    st.code(
+        "python-docx\nreportlab\nopenpyxl\npandas\nrequests",
+        language="text",
     )
 
     st.markdown("### 業務マスタCSV例")
@@ -898,9 +1240,9 @@ with tab6:
     st.markdown("### 補足")
     st.markdown(
         """
-- `具体業務数` と `task_details` は廃止しています。  
-- `責任範囲` は `グレード概要` に変更し、別タブのグレード定義を引用表示する設計です。  
-- 一覧・編集・Excel出力では `グレード概要` が参照表示されます。  
+- 一覧表示は、新人配布用の文面フォーマットでプレビューする設計に変更しています。  
+- `職務概要` は `あなたは○○課に所属し...` 形式でWord/PDFへ自動整形されます。  
+- `グレード定義` は別タブで管理し、一覧・編集・配布用出力へ引用表示します。  
 - 保存は **Supabase REST API** を使っているため、`supabase-py` の proxy 依存問題を回避できます。  
 - テーブルはスナップショット保存方式です。履歴をそのまま復元できます。  
 - RLS を ON にする場合は、`SELECT` と `INSERT` のポリシーを設定してください。
