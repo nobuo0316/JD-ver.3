@@ -450,6 +450,17 @@ def load_history() -> list:
     return rest_get("job_matrix", params={"select": "*", "order": "created_at.desc"})
 
 
+def load_latest_snapshot():
+    history = load_history()
+    if not history:
+        return None, None
+
+    latest = history[0]
+    latest_df = ensure_main_columns(pd.DataFrame(latest.get("data", [])))
+    latest_grade_master = ensure_grade_master(pd.DataFrame(latest.get("grade_master", [])))
+    return latest_df, latest_grade_master
+
+
 def normalize_text(value):
     if pd.isna(value):
         return None
@@ -990,19 +1001,6 @@ def create_handout_pdf_bytes(export_df: pd.DataFrame) -> bytes:
 # =========================
 # SESSION
 # =========================
-if "df" not in st.session_state:
-    st.session_state.df = generate_default()
-if "grade_master" not in st.session_state:
-    st.session_state.grade_master = get_default_grade_master()
-
-st.session_state.df = ensure_main_columns(st.session_state.df)
-st.session_state.grade_master = ensure_grade_master(st.session_state.grade_master)
-
-if "last_change_log" not in st.session_state:
-    st.session_state.last_change_log = pd.DataFrame()
-if "last_grade_change_log" not in st.session_state:
-    st.session_state.last_grade_change_log = pd.DataFrame()
-
 if "connection_ok" not in st.session_state:
     try:
         _ = load_history()
@@ -1015,6 +1013,27 @@ if not st.session_state.connection_ok:
     st.error(f"Supabase REST 接続失敗: {st.session_state.get('connection_error', 'Unknown error')}")
     st.info("Secrets、Supabaseテーブル、RLSポリシーを確認してください。")
     st.stop()
+
+if "df" not in st.session_state or "grade_master" not in st.session_state:
+    latest_df, latest_grade_master = load_latest_snapshot()
+
+    if latest_df is not None and not latest_df.empty:
+        st.session_state.df = latest_df
+    else:
+        st.session_state.df = generate_default()
+
+    if latest_grade_master is not None and not latest_grade_master.empty:
+        st.session_state.grade_master = latest_grade_master
+    else:
+        st.session_state.grade_master = get_default_grade_master()
+
+st.session_state.df = ensure_main_columns(st.session_state.df)
+st.session_state.grade_master = ensure_grade_master(st.session_state.grade_master)
+
+if "last_change_log" not in st.session_state:
+    st.session_state.last_change_log = pd.DataFrame()
+if "last_grade_change_log" not in st.session_state:
+    st.session_state.last_grade_change_log = pd.DataFrame()
 
 master_df = ensure_main_columns(st.session_state.df.copy())
 grade_master_df = ensure_grade_master(st.session_state.grade_master.copy())
