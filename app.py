@@ -362,75 +362,6 @@ def make_default_role_summary(department: str, grade: str, grade_name: str) -> s
     )
 
 
-def make_default_reports_to(department: str, grade: str) -> str:
-    return {
-        "G6": f"{department}の上位者（G5B/G5A想定）",
-        "G5B": f"{department}の上位者（G5A/G4想定）",
-        "G5A": f"{department}責任者（G4想定）",
-        "G4": f"{department}課長 / 部門責任者（G3想定）",
-        "G3": "次長 / 部門統括責任者（G2想定）",
-        "G2": "経営層 / 拠点責任者",
-    }.get(grade, "上位者")
-
-
-def make_default_direct_reports(department: str, grade: str) -> str:
-    return {
-        "G6": "なし",
-        "G5B": "なし（必要に応じて後輩指導）",
-        "G5A": "なし（または実務指導対象メンバー）",
-        "G4": f"{department}所属メンバー / オペレーター / スタッフ",
-        "G3": f"{department}のスーパーバイザーおよび担当者",
-        "G2": "複数部門の管理者 / 課長クラス",
-    }.get(grade, "なし")
-
-
-def make_default_skills(department: str, grade: str) -> str:
-    common_basic = "Excel、Word、メール、データ入力、報告書作成"
-    common_mid = "Excel、Word、PowerPoint、データ集計、進捗管理、部門間調整"
-    common_mgr = "Excel分析、資料作成、会議運営、マネジメント、業務改善"
-    dept_specific = {
-        "人事課": "採用管理、勤怠管理、労務関連書類の取扱い",
-        "総務課": "文書管理、備品管理、社内調整、庶務対応",
-        "経理課": "仕訳、証憑管理、会計データ確認、締め処理",
-        "財務課": "資金繰り表、予算実績管理、銀行対応、数値分析",
-        "情報管理課": "データ整備、システム運用、マスタ管理、ITリテラシー",
-        "エリア運営課": "現場記録、進捗把握、安全確認、作業調整",
-        "設備・運搬課": "設備点検、安全管理、運搬計画、車両管理",
-        "ナーサリー課": "育苗管理、作業記録、品質確認、現場管理",
-        "マーケティング課": "市場調査、資料作成、情報整理、社外向け表現",
-        "プロセス管理課": "工程管理、品質管理、標準化、改善活動",
-        "インサイドコミュニケーション課": "社内周知、イベント運営、文書作成、調整力",
-        "アウトサイドコミュニケーション課": "対外連絡、資料更新、渉外対応、調整力",
-    }.get(department, "担当領域に関する基礎実務")
-    if grade in ["G6", "G5B"]:
-        return f"{common_basic}、{dept_specific}"
-    if grade == "G5A":
-        return f"{common_mid}、{dept_specific}"
-    return f"{common_mgr}、{dept_specific}"
-
-
-def make_default_kra(department: str, grade: str) -> str:
-    return {
-        "G6": "担当業務の正確な遂行、期限遵守、品質維持",
-        "G5B": "担当領域の安定運用、業務品質向上、改善協力",
-        "G5A": "担当領域の成果達成、周囲支援、改善提案",
-        "G4": f"{department}の目標達成、チーム管理、業務改善、コスト最適化",
-        "G3": f"{department}の成果最大化、人員配置最適化、予算管理、継続改善",
-        "G2": "部門横断での成果創出、収益性向上、全体最適、戦略実行",
-    }.get(grade, "担当業務の成果達成")
-
-
-def make_default_accountabilities(department: str, grade: str) -> str:
-    return {
-        "G6": "日次業務、定型処理、記録入力、上司への報告",
-        "G5B": "日次・週次レポート、定型資料更新、関係部署連携",
-        "G5A": "月次報告、業務進捗管理、課題抽出、改善提案",
-        "G4": "進捗管理、報告書作成、会議運営、メンバー指導、提出物管理",
-        "G3": "部門計画管理、月次レビュー、予算/実績管理、上位報告",
-        "G2": "拠点運営レビュー、重要課題対応、経営報告、部門統括",
-    }.get(grade, "定期報告・業務運営")
-
-
 def make_default_kpi(grade: str) -> str:
     return {
         "G6": "業務達成率、処理件数、正確性、期限遵守率",
@@ -440,6 +371,75 @@ def make_default_kpi(grade: str) -> str:
         "G3": "課目標達成率、予算遵守率、改善成果、組織運営状況",
         "G2": "部門目標達成率、戦略進捗、横断課題解決、収益・効率改善",
     }[grade]
+
+
+def make_default_reports_to(department: str, grade: str) -> str:
+    return {
+        "G6": f"{department} G5A または G4",
+        "G5B": f"{department} G5A または G4",
+        "G5A": f"{department} G4",
+        "G4": f"{department} G3",
+        "G3": "管掌次長 / 部門責任者（G2）",
+        "G2": "拠点責任者 / 経営層",
+    }.get(grade, "別途設定")
+
+
+def make_default_direct_reports(department: str, grade: str) -> str:
+    return {
+        "G6": "なし",
+        "G5B": "なし",
+        "G5A": f"必要に応じて G6 メンバーを業務指導",
+        "G4": f"{department} の担当メンバー",
+        "G3": f"{department} のスーパーバイザーおよび担当メンバー",
+        "G2": "各部門責任者・管理職",
+    }.get(grade, "別途設定")
+
+
+def make_default_skills(department: str, grade: str) -> str:
+    common = {
+        "G6": "基本的なPCスキル（Excel、Word、メール）、報連相、データ入力の正確性",
+        "G5B": "Excel/Word、進捗管理、社内調整、文書作成",
+        "G5A": "Excel関数、資料作成、課題整理、関係部署との調整",
+        "G4": "マネジメント、Excel分析、レポーティング、会議運営、業務改善",
+        "G3": "部門管理、数値管理、予算管理、方針立案、対外/他部門調整",
+        "G2": "戦略立案、組織運営、経営判断支援、横断調整、リスク管理",
+    }.get(grade, "別途設定")
+    if department in ["情報管理課", "経理課", "財務課"] and grade in ["G5A", "G4", "G3", "G2"]:
+        return common + "、データ分析・システム活用"
+    return common
+
+
+def make_default_kra(department: str, grade: str) -> str:
+    if department in ["エリア運営課", "ナーサリー課", "設備・運搬課"]:
+        base = {
+            "G6": "担当業務の安定遂行、作業品質の維持、安全遵守",
+            "G5B": "担当エリア/工程の安定運用、品質維持、報告精度向上",
+            "G5A": "業務改善、品質向上、生産性向上への貢献",
+            "G4": "現場成果達成、人員配置最適化、安全・品質・進捗管理",
+            "G3": "課目標達成、コストコントロール、収穫/生産計画の安定実行",
+            "G2": "拠点全体の生産性向上、収益改善、運営体制強化",
+        }
+    else:
+        base = {
+            "G6": "担当業務の安定運用、品質維持、期限遵守",
+            "G5B": "担当領域の安定運用、業務品質向上、関係部署連携",
+            "G5A": "業務改善、処理精度向上、周囲支援",
+            "G4": "チーム成果達成、業務改善、人材育成",
+            "G3": "課目標達成、コスト管理、組織運営高度化",
+            "G2": "部門成果最大化、戦略推進、全体最適",
+        }
+    return base.get(grade, "別途設定")
+
+
+def make_default_accountabilities(department: str, grade: str) -> str:
+    return {
+        "G6": "日次業務の遂行、データ入力、定例報告、書類作成補助",
+        "G5B": "週次/月次レポート作成、進捗確認、関係者連絡、定期提出物対応",
+        "G5A": "担当業務の取りまとめ、改善提案、関係部署調整、報告書作成",
+        "G4": "進捗管理、メンバー指導、会議運営、KPI管理、報告書レビュー",
+        "G3": "部門計画策定、月次報告、課題管理、予実管理、重要案件対応",
+        "G2": "部門方針策定、経営報告、横断課題推進、重要意思決定支援",
+    }.get(grade, "別途設定")
 
 
 def generate_default() -> pd.DataFrame:
@@ -490,16 +490,8 @@ def ensure_main_columns(df: pd.DataFrame) -> pd.DataFrame:
         if col not in out.columns:
             out[col] = default
     return out[[
-        "department",
-        "grade",
-        "grade_name",
-        "role_summary",
-        "kpi",
-        "reports_to",
-        "direct_reports",
-        "skills",
-        "kra",
-        "accountabilities",
+        "department", "grade", "grade_name", "role_summary", "kpi",
+        "reports_to", "direct_reports", "skills", "kra", "accountabilities"
     ]]
 
 
@@ -589,16 +581,8 @@ def dataframe_to_excel_bytes(df: pd.DataFrame, grade_master_df: pd.DataFrame) ->
 
 def minimal_template_csv_bytes() -> bytes:
     template_df = pd.DataFrame(columns=[
-        "department",
-        "grade",
-        "grade_name",
-        "role_summary",
-        "kpi",
-        "reports_to",
-        "direct_reports",
-        "skills",
-        "kra",
-        "accountabilities",
+        "department", "grade", "grade_name", "role_summary", "kpi",
+        "reports_to", "direct_reports", "skills", "kra", "accountabilities"
     ])
     return template_df.to_csv(index=False).encode("utf-8-sig")
 
@@ -755,19 +739,19 @@ def make_handout_dict(row: pd.Series) -> dict:
         "job_overview": (
             f"{role_summary}"
             if role_summary
-            else f"担当領域の業務を遂行します。"
+            else "担当領域の業務を遂行します。"
         ),
         "grade_definition": (
             f"本職位は、{grade_overview}"
             if grade_overview and not grade_overview.startswith("本職位は")
             else grade_overview
         ),
+        "kpi_items": kpi_items,
         "reports_to": str(row.get("reports_to", "")).strip(),
         "direct_reports": str(row.get("direct_reports", "")).strip(),
         "skills": str(row.get("skills", "")).strip(),
         "kra": str(row.get("kra", "")).strip(),
         "accountabilities": str(row.get("accountabilities", "")).strip(),
-        "kpi_items": kpi_items,
         "note": "本定義は、業務内容・組織状況に応じて見直される場合があります。",
     }
 
@@ -779,7 +763,12 @@ def make_handout_text(row: pd.Series) -> str:
         f"【{data['title']}】\n\n"
         f"■ 所属\n{data['department']}\n\n"
         f"■ 職位\n{data['position']}\n\n"
+        f"■ Reports to（直属の上司）\n{data['reports_to'] or '別途設定'}\n\n"
+        f"■ Direct Reports（直属の部下）\n{data['direct_reports'] or '別途設定'}\n\n"
         f"■ 職務概要\n{data['job_overview']}\n\n"
+        f"■ Skills\n{data['skills'] or '別途設定'}\n\n"
+        f"■ Key Result Areas - KRA（主要な責任）\n{data['kra'] or '別途設定'}\n\n"
+        f"■ Key Operational Accountabilities（重要なタスク）\n{data['accountabilities'] or '別途設定'}\n\n"
         f"■ グレード定義\n{data['grade_definition']}\n\n"
         f"■ 評価指標（KPI）\n{kpi_text}\n\n"
         f"■ 備考\n{data['note']}"
@@ -860,7 +849,12 @@ def create_handout_excel_bytes(export_df: pd.DataFrame) -> bytes:
         rows = [
             ("所属", data["department"]),
             ("職位", data["position"]),
+            ("直属の上司", data["reports_to"] or "別途設定"),
+            ("直属の部下", data["direct_reports"] or "別途設定"),
             ("職務概要", data["job_overview"]),
+            ("必要スキル", data["skills"] or "別途設定"),
+            ("KRA（主要な責任）", data["kra"] or "別途設定"),
+            ("重要タスク", data["accountabilities"] or "別途設定"),
             ("グレード定義", data["grade_definition"]),
             ("評価指標（KPI）", "\n".join([f"・{item}" for item in data["kpi_items"]]) if data["kpi_items"] else "・別途設定"),
             ("備考", data["note"]),
@@ -884,26 +878,25 @@ def create_handout_excel_bytes(export_df: pd.DataFrame) -> bytes:
         for row_no, height in {
             3: 22,
             4: 22,
-            5: 70,
-            6: 84,
-            7: 26,
-            8: 26,
+            5: 22,
+            6: 28,
+            7: 85,
+            8: 52,
             9: 52,
-            10: 52,
-            11: 52,
+            10: 60,
+            11: 84,
             12: 60,
-            13: 52,
-            14: 30,
+            13: 30,
+            14: 22,
             15: 22,
-            16: 22,
         }.items():
             ws.row_dimensions[row_no].height = height
 
-        ws["B18"] = f"作成日: {datetime.now().strftime('%Y-%m-%d')}"
-        ws["B18"].font = Font(name="Arial", size=9, italic=True)
-        ws["B18"].alignment = Alignment(horizontal="right")
+        ws["B17"] = f"作成日: {datetime.now().strftime('%Y-%m-%d')}"
+        ws["B17"].font = Font(name="Arial", size=9, italic=True)
+        ws["B17"].alignment = Alignment(horizontal="right")
 
-        ws.print_area = "A1:B18"
+        ws.print_area = "A1:B17"
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -982,7 +975,12 @@ def create_handout_docx_bytes(export_df: pd.DataFrame) -> bytes:
         rows = [
             ("所属", data["department"]),
             ("職位", data["position"]),
+            ("直属の上司", data["reports_to"] or "別途設定"),
+            ("直属の部下", data["direct_reports"] or "別途設定"),
             ("職務概要", data["job_overview"]),
+            ("必要スキル", data["skills"] or "別途設定"),
+            ("KRA（主要な責任）", data["kra"] or "別途設定"),
+            ("重要タスク", data["accountabilities"] or "別途設定"),
             ("グレード定義", data["grade_definition"]),
             ("評価指標（KPI）", "\n".join([f"・{item}" for item in data["kpi_items"]]) if data["kpi_items"] else "・別途設定"),
             ("備考", data["note"]),
@@ -1080,7 +1078,12 @@ def create_handout_pdf_bytes(export_df: pd.DataFrame) -> bytes:
         rows = [
             [Paragraph("所属", label_style), Paragraph(data["department"].replace("\n", "<br/>"), body_style)],
             [Paragraph("職位", label_style), Paragraph(data["position"], body_style)],
+            [Paragraph("直属の上司", label_style), Paragraph((data["reports_to"] or "別途設定").replace("\n", "<br/>"), body_style)],
+            [Paragraph("直属の部下", label_style), Paragraph((data["direct_reports"] or "別途設定").replace("\n", "<br/>"), body_style)],
             [Paragraph("職務概要", label_style), Paragraph(data["job_overview"].replace("\n", "<br/>"), body_style)],
+            [Paragraph("必要スキル", label_style), Paragraph((data["skills"] or "別途設定").replace("\n", "<br/>"), body_style)],
+            [Paragraph("KRA（主要な責任）", label_style), Paragraph((data["kra"] or "別途設定").replace("\n", "<br/>"), body_style)],
+            [Paragraph("重要タスク", label_style), Paragraph((data["accountabilities"] or "別途設定").replace("\n", "<br/>"), body_style)],
             [Paragraph("グレード定義", label_style), Paragraph(data["grade_definition"].replace("\n", "<br/>"), body_style)],
             [
                 Paragraph("評価指標（KPI）", label_style),
@@ -1230,7 +1233,7 @@ with tab1:
 
 with tab2:
     st.subheader("直接編集")
-    st.write("`職務概要` は配布用の書き方を前提にした 2〜3文で入力してください。`Reports to / Direct Reports / Skills / KRA / 重要タスク` も直接編集可能です。`グレード定義` は別タブの内容を自動参照します。")
+    st.write("`職務概要` は配布用の書き方を前提にした 2〜3文で入力してください。`グレード定義` は別タブの内容を自動参照します。")
 
     edited_df = st.data_editor(
         filtered_df,
@@ -1243,12 +1246,12 @@ with tab2:
             "grade_name": st.column_config.TextColumn("グレード名"),
             "role_summary": st.column_config.TextColumn("職務概要（2〜3文）", width="large"),
             "grade_overview": st.column_config.TextColumn("グレード定義", disabled=True, width="large"),
+            "kpi": st.column_config.TextColumn("評価指標（KPI）", width="medium"),
             "reports_to": st.column_config.TextColumn("Reports to（直属の上司）", width="medium"),
             "direct_reports": st.column_config.TextColumn("Direct Reports（直属の部下）", width="medium"),
             "skills": st.column_config.TextColumn("Skills", width="large"),
             "kra": st.column_config.TextColumn("KRA（主要な責任）", width="large"),
-            "accountabilities": st.column_config.TextColumn("重要タスク", width="large"),
-            "kpi": st.column_config.TextColumn("評価指標（KPI）", width="medium"),
+            "accountabilities": st.column_config.TextColumn("Key Operational Accountabilities（重要なタスク）", width="large"),
         },
     )
 
@@ -1343,28 +1346,28 @@ with tab4:
         st.download_button(
             "現在データをCSV出力",
             data=dataframe_to_csv_bytes(st.session_state.df),
-            file_name="job_matrix_v4_export.csv",
+            file_name="job_matrix_v5_1_export.csv",
             mime="text/csv",
         )
     with dl2:
         st.download_button(
             "現在データをExcel出力",
             data=dataframe_to_excel_bytes(st.session_state.df, st.session_state.grade_master),
-            file_name="job_matrix_v4_export.xlsx",
+            file_name="job_matrix_v5_1_export.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     with dl3:
         st.download_button(
             "グレード定義CSV出力",
             data=grade_master_to_csv_bytes(st.session_state.grade_master),
-            file_name="grade_master_v4_export.csv",
+            file_name="grade_master_v5_1_export.csv",
             mime="text/csv",
         )
     with dl4:
         st.download_button(
             "業務マスタ空テンプレートCSV",
             data=minimal_template_csv_bytes(),
-            file_name="job_matrix_v4_template.csv",
+            file_name="job_matrix_v5_1_template.csv",
             mime="text/csv",
         )
     with dl5:
@@ -1379,7 +1382,7 @@ with tab4:
     st.markdown("### 業務マスタCSV部分更新")
     st.write("`department + grade` が一致する行だけ対象です。")
     st.write("CSVで値が入っているセルだけ更新し、空欄は既存値を保持します。")
-    st.write("更新対象列: `grade_name`, `role_summary`, `kpi`")
+    st.write("更新対象列: `grade_name`, `role_summary`, `kpi`, `reports_to`, `direct_reports`, `skills`, `kra`, `accountabilities`")
 
     uploaded_csv = st.file_uploader("業務マスタ更新用CSVをアップロード", type=["csv"], key="job_csv")
     if uploaded_csv is not None:
