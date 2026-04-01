@@ -1,6 +1,6 @@
-streamlit==1.44.1
-pandas==2.2.3
-openpyxl==3.1.5
-requests==2.32.3
-python-docx
-reportlab
+streamlit==1.33.0
+pandas==2.2.2
+requests==2.31.0
+openpyxl==3.1.2
+python-docx==1.1.0
+reportlab==4.1.0
