@@ -636,9 +636,9 @@ def make_handout_dict(row: pd.Series) -> dict:
         "department": department,
         "position": f"{grade}（{grade_name}）",
         "job_overview": (
-            f"あなたは{department}に所属し、{role_summary}"
+            f"{department}に所属し、{role_summary}"
             if role_summary
-            else f"あなたは{department}に所属し、担当領域の業務を遂行します。"
+            else f"{department}に所属し、担当領域の業務を遂行します。"
         ),
         "grade_definition": (
             f"本職位は、{grade_overview}"
@@ -1296,7 +1296,7 @@ with tab7:
     st.markdown(
         """
 - 一覧表示は、新人配布用の文面フォーマットでプレビューする設計に変更しています。  
-- `職務概要` は `あなたは○○課に所属し...` 形式でWord/PDFへ自動整形されます。  
+- `職務概要`  `○○課に所属し...` 形式でWord/PDFへ自動整形されます。  
 - `グレード定義` は別タブで管理し、一覧・編集・配布用出力へ引用表示します。  
 - 保存は **Supabase REST API** を使っているため、`supabase-py` の proxy 依存問題を回避できます。  
 - テーブルはスナップショット保存方式です。履歴をそのまま復元できます。  
