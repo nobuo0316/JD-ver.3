@@ -670,6 +670,119 @@ def dataframe_for_handout_export(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["department", "grade_sort"]).drop(columns=["grade_sort"])
 
 
+def create_handout_excel_bytes(export_df: pd.DataFrame) -> bytes:
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+        from openpyxl.worksheet.pagebreak import Break
+    except Exception as e:
+        raise RuntimeError(
+            "Excel出力には openpyxl が必要です。requirements.txt に openpyxl を追加してください。"
+        ) from e
+
+    wb = Workbook()
+    default_ws = wb.active
+    wb.remove(default_ws)
+
+    thin_side = Side(style="thin", color="C7D2E0")
+    border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    label_fill = PatternFill("solid", fgColor="EAF1FB")
+    title_font = Font(name="Arial", size=14, bold=True)
+    label_font = Font(name="Arial", size=10.5, bold=True)
+    body_font = Font(name="Arial", size=10.5)
+    center_align = Alignment(horizontal="center", vertical="center")
+    top_wrap = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+    records = export_df.to_dict(orient="records")
+    for idx, record in enumerate(records, start=1):
+        row = pd.Series(record)
+        data = make_handout_dict(row)
+
+        raw_sheet_name = f"{data['department']}_{row.get('grade', '')}"
+        invalid_chars = ['\\', '/', '*', '?', ':', '[', ']']
+        for ch in invalid_chars:
+            raw_sheet_name = raw_sheet_name.replace(ch, "_")
+        sheet_name = raw_sheet_name[:31] or f"Sheet{idx}"
+
+        counter = 1
+        base_sheet_name = sheet_name
+        while sheet_name in wb.sheetnames:
+            suffix = f"_{counter}"
+            sheet_name = f"{base_sheet_name[:31-len(suffix)]}{suffix}"
+            counter += 1
+
+        ws = wb.create_sheet(title=sheet_name)
+        ws.sheet_view.showGridLines = False
+        ws.freeze_panes = "A1"
+        ws.page_setup.orientation = "portrait"
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 1
+        ws.page_margins.left = 0.35
+        ws.page_margins.right = 0.35
+        ws.page_margins.top = 0.45
+        ws.page_margins.bottom = 0.45
+        ws.print_options.horizontalCentered = False
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+        ws.column_dimensions["A"].width = 18
+        ws.column_dimensions["B"].width = 55
+
+        ws.merge_cells("A1:B1")
+        ws["A1"] = data["title"]
+        ws["A1"].font = title_font
+        ws["A1"].alignment = center_align
+        ws.row_dimensions[1].height = 24
+
+        rows = [
+            ("所属", data["department"]),
+            ("職位", data["position"]),
+            ("職務概要", data["job_overview"]),
+            ("グレード定義", data["grade_definition"]),
+            ("評価指標（KPI）", "\n".join([f"・{item}" for item in data["kpi_items"]]) if data["kpi_items"] else "・別途設定"),
+            ("備考", data["note"]),
+            ("署名", "____________________"),
+            ("受領日", "____________________"),
+        ]
+
+        start_row = 3
+        for offset, (label, value) in enumerate(rows):
+            r = start_row + offset
+            ws[f"A{r}"] = label
+            ws[f"B{r}"] = value
+            ws[f"A{r}"].font = label_font
+            ws[f"B{r}"].font = body_font
+            ws[f"A{r}"].fill = label_fill
+            ws[f"A{r}"].border = border
+            ws[f"B{r}"].border = border
+            ws[f"A{r}"].alignment = center_align
+            ws[f"B{r}"].alignment = top_wrap
+
+        for row_no, height in {
+            3: 22,
+            4: 22,
+            5: 70,
+            6: 84,
+            7: 52,
+            8: 30,
+            9: 22,
+            10: 22,
+        }.items():
+            ws.row_dimensions[row_no].height = height
+
+        ws["B12"] = f"作成日: {datetime.now().strftime('%Y-%m-%d')}"
+        ws["B12"].font = Font(name="Arial", size=9, italic=True)
+        ws["B12"].alignment = Alignment(horizontal="right")
+
+        ws.print_area = "A1:B12"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def create_handout_docx_bytes(export_df: pd.DataFrame) -> bytes:
     try:
         from docx import Document
@@ -1046,7 +1159,7 @@ with tab3:
             else f"job_assignment_bundle_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
 
-        col_docx, col_pdf = st.columns(2)
+        col_docx, col_pdf, col_xlsx = st.columns(3)
         with col_docx:
             try:
                 docx_bytes = create_handout_docx_bytes(selected_export_df)
@@ -1069,6 +1182,17 @@ with tab3:
                 )
             except Exception as e:
                 st.error(f"PDF出力エラー: {e}")
+        with col_xlsx:
+            try:
+                excel_bytes = create_handout_excel_bytes(selected_export_df)
+                st.download_button(
+                    "配布用Excelを出力",
+                    data=excel_bytes,
+                    file_name=f"{base_name}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            except Exception as e:
+                st.error(f"Excel出力エラー: {e}")
 
 with tab4:
     st.subheader("CSV / Excel 入出力")
