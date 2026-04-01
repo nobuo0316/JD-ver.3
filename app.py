@@ -1,5 +1,8 @@
+import hashlib
+import hmac
 import io
-from datetime import datetime
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
@@ -108,6 +111,7 @@ def rest_get(path: str, params: Optional[dict] = None):
     return response.json()
 
 
+
 def rest_post(path: str, payload: dict):
     response = requests.post(
         f"{SUPABASE_URL}/rest/v1/{path}",
@@ -117,6 +121,189 @@ def rest_post(path: str, payload: dict):
     )
     response.raise_for_status()
     return response.json()
+
+
+def rest_patch(path: str, payload: dict, params: Optional[dict] = None):
+    response = requests.patch(
+        f"{SUPABASE_URL}/rest/v1/{path}",
+        headers=supabase_headers(prefer="return=representation"),
+        params=params,
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+APP_MAX_LOGIN_ATTEMPTS = int(st.secrets.get("APP_MAX_LOGIN_ATTEMPTS", 5))
+APP_LOCK_MINUTES = int(st.secrets.get("APP_LOCK_MINUTES", 30))
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def iso_utc(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def parse_dt(value: Optional[str]) -> Optional[datetime]:
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip().replace("Z", "+00:00")
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def hash_password(password: str, salt: Optional[str] = None, iterations: int = 390000) -> str:
+    if not salt:
+        salt = os.urandom(16).hex()
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations)
+    return f"pbkdf2_sha256${iterations}${salt}${dk.hex()}"
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt, digest = password_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        candidate = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            int(iterations),
+        ).hex()
+        return hmac.compare_digest(candidate, digest)
+    except Exception:
+        return False
+
+
+def auth_get_user(username: str) -> Optional[dict]:
+    result = rest_get(
+        "app_users",
+        params={"select": "*", "username": f"eq.{username}", "limit": 1},
+    )
+    return result[0] if result else None
+
+
+def auth_list_users() -> list[dict]:
+    return rest_get("app_users", params={"select": "*", "order": "username.asc"})
+
+
+def auth_update_user(username: str, payload: dict) -> list:
+    return rest_patch("app_users", payload, params={"username": f"eq.{username}"})
+
+
+def auth_create_user(username: str, password: str, role: str, display_name: str, is_active: bool = True) -> dict:
+    payload = {
+        "username": username.strip(),
+        "display_name": display_name.strip() or username.strip(),
+        "role": role,
+        "password_hash": hash_password(password),
+        "failed_attempts": 0,
+        "locked_until": None,
+        "is_active": is_active,
+        "created_at": iso_utc(utc_now()),
+        "updated_at": iso_utc(utc_now()),
+        "last_login_at": None,
+    }
+    result = rest_post("app_users", payload)
+    return result[0] if isinstance(result, list) and result else payload
+
+
+def remaining_lock_minutes(user: dict) -> int:
+    locked_until = parse_dt(user.get("locked_until"))
+    if locked_until is None:
+        return 0
+    remaining_seconds = int((locked_until - utc_now()).total_seconds())
+    if remaining_seconds <= 0:
+        return 0
+    return max(1, (remaining_seconds + 59) // 60)
+
+
+def login_user(username: str, password: str):
+    username = username.strip()
+    if username == "" or password == "":
+        return False, "ユーザー名とパスワードを入力してください。"
+
+    user = auth_get_user(username)
+    if not user:
+        return False, "ユーザー名またはパスワードが正しくありません。"
+
+    if not bool(user.get("is_active", True)):
+        return False, "このアカウントは無効化されています。管理者に確認してください。"
+
+    lock_minutes = remaining_lock_minutes(user)
+    if lock_minutes > 0:
+        return False, f"ログインに連続失敗したためロック中です。{lock_minutes}分後に再試行してください。"
+
+    if not verify_password(password, str(user.get("password_hash", ""))):
+        current_attempts = int(user.get("failed_attempts") or 0) + 1
+        payload = {
+            "failed_attempts": current_attempts,
+            "updated_at": iso_utc(utc_now()),
+        }
+        if current_attempts >= APP_MAX_LOGIN_ATTEMPTS:
+            payload["failed_attempts"] = 0
+            payload["locked_until"] = iso_utc(utc_now() + timedelta(minutes=APP_LOCK_MINUTES))
+            auth_update_user(username, payload)
+            return False, f"パスワードを{APP_MAX_LOGIN_ATTEMPTS}回連続で間違えたため、{APP_LOCK_MINUTES}分間ロックしました。"
+        auth_update_user(username, payload)
+        remaining = APP_MAX_LOGIN_ATTEMPTS - current_attempts
+        return False, f"ユーザー名またはパスワードが正しくありません。残り{remaining}回でロックされます。"
+
+    auth_update_user(
+        username,
+        {
+            "failed_attempts": 0,
+            "locked_until": None,
+            "last_login_at": iso_utc(utc_now()),
+            "updated_at": iso_utc(utc_now()),
+        },
+    )
+    session_user = {
+        "username": user.get("username", username),
+        "display_name": user.get("display_name") or username,
+        "role": user.get("role", "viewer"),
+    }
+    st.session_state.auth_user = session_user
+    return True, f"{session_user['display_name']} さんでログインしました。"
+
+
+def logout_user():
+    st.session_state.auth_user = None
+
+
+def render_login_screen():
+    st.markdown("## ログイン")
+    st.write("管理人は編集可能、ユーザーは閲覧とダウンロードのみ可能です。")
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("ユーザー名")
+        password = st.text_input("パスワード", type="password")
+        submitted = st.form_submit_button("ログイン", type="primary")
+    if submitted:
+        try:
+            success, message = login_user(username, password)
+            if success:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+        except Exception as e:
+            st.error(f"ログイン処理でエラーが発生しました: {e}")
+
+    st.markdown("### 初期設定メモ")
+    st.markdown(
+        f"""
+- アカウントは `app_users` テーブルで管理します。
+- `role` は `admin` または `viewer` を使用してください。
+- パスワードは **{APP_MAX_LOGIN_ATTEMPTS}回** 連続失敗で **{APP_LOCK_MINUTES}分** ロックされます。
+        """
+    )
 
 
 GRADES = {
@@ -1118,12 +1305,14 @@ def create_handout_pdf_bytes(export_df: pd.DataFrame) -> bytes:
     return buffer.getvalue()
 
 
+
 # =========================
-# SESSION
+# SESSION / AUTH
 # =========================
 if "connection_ok" not in st.session_state:
     try:
         _ = load_history()
+        _ = rest_get("app_users", params={"select": "username", "limit": 1})
         st.session_state.connection_ok = True
     except Exception as e:
         st.session_state.connection_ok = False
@@ -1133,6 +1322,29 @@ if not st.session_state.connection_ok:
     st.error(f"Supabase REST 接続失敗: {st.session_state.get('connection_error', 'Unknown error')}")
     st.info("Secrets、Supabaseテーブル、RLSポリシーを確認してください。")
     st.stop()
+
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
+if not st.session_state.auth_user:
+    render_login_screen()
+    st.stop()
+
+auth_user = st.session_state.auth_user or {}
+user_role = str(auth_user.get("role", "viewer"))
+can_edit = user_role == "admin"
+
+with st.sidebar:
+    st.markdown("### ログイン情報")
+    st.write(f"**ユーザー:** {auth_user.get('display_name', auth_user.get('username', ''))}")
+    st.write(f"**権限:** {'管理人' if can_edit else 'ユーザー'} ({user_role})")
+    if st.button("ログアウト"):
+        logout_user()
+        st.rerun()
+    if can_edit:
+        st.success("このアカウントは編集可能です。")
+    else:
+        st.info("このアカウントは閲覧とダウンロードのみ可能です。")
 
 if "df" not in st.session_state or "grade_master" not in st.session_state:
     latest_df, latest_grade_master = load_latest_snapshot()
@@ -1159,6 +1371,11 @@ master_df = ensure_main_columns(st.session_state.df.copy())
 grade_master_df = ensure_grade_master(st.session_state.grade_master.copy())
 display_master_df = attach_grade_overview(master_df, grade_master_df)
 summary_df = department_summary(master_df)
+
+st.caption(
+    f"ログイン中: {auth_user.get('display_name', auth_user.get('username', ''))} / "
+    f"権限: {'管理人（編集可）' if can_edit else 'ユーザー（閲覧・DLのみ）'}"
+)
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("部門数", len(DEPARTMENTS))
@@ -1233,6 +1450,8 @@ with tab1:
 
 with tab2:
     st.subheader("直接編集")
+    if not can_edit:
+        st.info("ユーザー権限では編集できません。管理人でログインしてください。")
     st.write("`職務概要` は配布用の書き方を前提にした 2〜3文で入力してください。`グレード定義` は別タブの内容を自動参照します。")
 
     edited_df = st.data_editor(
@@ -1240,6 +1459,7 @@ with tab2:
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
+        disabled=not can_edit,
         column_config={
             "department": st.column_config.TextColumn("所属部門", disabled=True),
             "grade": st.column_config.TextColumn("グレード", disabled=True),
@@ -1256,7 +1476,7 @@ with tab2:
     )
 
     memo = st.text_input("保存メモ", placeholder="例: 総務課と財務課の配布文面を調整")
-    if st.button("編集内容をSupabaseへ保存", type="primary"):
+    if st.button("編集内容をSupabaseへ保存", type="primary", disabled=not can_edit):
         new_master = update_master_from_editor(
             st.session_state.df,
             edited_df.drop(columns=["grade_overview"], errors="ignore"),
@@ -1267,7 +1487,7 @@ with tab2:
 
 with tab3:
     st.subheader("配布用出力")
-    st.write("新人配属時にそのまま渡せる形式で、Word / PDF を出力します。")
+    st.write("新人配属時にそのまま渡せる形式で、Word / PDF / Excel を出力します。")
 
     export_mode = st.radio("出力対象", ["1件だけ出力", "フィルター結果をまとめて出力"], horizontal=True)
 
@@ -1346,28 +1566,28 @@ with tab4:
         st.download_button(
             "現在データをCSV出力",
             data=dataframe_to_csv_bytes(st.session_state.df),
-            file_name="job_matrix_v5_1_export.csv",
+            file_name="job_matrix_v6_export.csv",
             mime="text/csv",
         )
     with dl2:
         st.download_button(
             "現在データをExcel出力",
             data=dataframe_to_excel_bytes(st.session_state.df, st.session_state.grade_master),
-            file_name="job_matrix_v5_1_export.xlsx",
+            file_name="job_matrix_v6_export.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     with dl3:
         st.download_button(
             "グレード定義CSV出力",
             data=grade_master_to_csv_bytes(st.session_state.grade_master),
-            file_name="grade_master_v5_1_export.csv",
+            file_name="grade_master_v6_export.csv",
             mime="text/csv",
         )
     with dl4:
         st.download_button(
             "業務マスタ空テンプレートCSV",
             data=minimal_template_csv_bytes(),
-            file_name="job_matrix_v5_1_template.csv",
+            file_name="job_matrix_v6_template.csv",
             mime="text/csv",
         )
     with dl5:
@@ -1384,67 +1604,70 @@ with tab4:
     st.write("CSVで値が入っているセルだけ更新し、空欄は既存値を保持します。")
     st.write("更新対象列: `grade_name`, `role_summary`, `kpi`, `reports_to`, `direct_reports`, `skills`, `kra`, `accountabilities`")
 
-    uploaded_csv = st.file_uploader("業務マスタ更新用CSVをアップロード", type=["csv"], key="job_csv")
-    if uploaded_csv is not None:
-        try:
-            import_df = pd.read_csv(uploaded_csv)
-            st.markdown("#### アップロード内容")
-            st.dataframe(import_df, use_container_width=True, hide_index=True)
+    if not can_edit:
+        st.info("ユーザー権限ではCSV更新できません。ダウンロードのみ可能です。")
+    else:
+        uploaded_csv = st.file_uploader("業務マスタ更新用CSVをアップロード", type=["csv"], key="job_csv")
+        if uploaded_csv is not None:
+            try:
+                import_df = pd.read_csv(uploaded_csv)
+                st.markdown("#### アップロード内容")
+                st.dataframe(import_df, use_container_width=True, hide_index=True)
 
-            if "department" in import_df.columns and "grade" in import_df.columns:
-                invalid_df = validate_import_keys(st.session_state.df, import_df)
-                if not invalid_df.empty:
-                    st.warning("マスタに存在しない department + grade が含まれています。これらは更新されません。")
-                    st.dataframe(invalid_df, use_container_width=True, hide_index=True)
-                else:
-                    st.success("すべてのキーが既存マスタに存在しています。")
+                if "department" in import_df.columns and "grade" in import_df.columns:
+                    invalid_df = validate_import_keys(st.session_state.df, import_df)
+                    if not invalid_df.empty:
+                        st.warning("マスタに存在しない department + grade が含まれています。これらは更新されません。")
+                        st.dataframe(invalid_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.success("すべてのキーが既存マスタに存在しています。")
 
-            csv_memo = st.text_input("業務マスタ更新メモ", placeholder="例: 部門長レビュー反映", key="job_csv_memo")
-            if st.button("業務マスタをCSV内容で部分更新する", type="primary"):
-                new_df, change_log = merge_partial_update(st.session_state.df, import_df)
-                st.session_state.df = ensure_main_columns(new_df)
-                st.session_state.last_change_log = change_log
-                save_snapshot(
-                    st.session_state.df,
-                    st.session_state.grade_master,
-                    csv_memo or f"job csv partial update ({len(change_log)} changes)",
+                csv_memo = st.text_input("業務マスタ更新メモ", placeholder="例: 部門長レビュー反映", key="job_csv_memo")
+                if st.button("業務マスタをCSV内容で部分更新する", type="primary"):
+                    new_df, change_log = merge_partial_update(st.session_state.df, import_df)
+                    st.session_state.df = ensure_main_columns(new_df)
+                    st.session_state.last_change_log = change_log
+                    save_snapshot(
+                        st.session_state.df,
+                        st.session_state.grade_master,
+                        csv_memo or f"job csv partial update ({len(change_log)} changes)",
+                    )
+                    st.success(f"更新完了: {len(change_log)} 件")
+            except Exception as e:
+                st.error(f"CSV取込エラー: {e}")
+
+        st.markdown("---")
+        st.markdown("### グレード定義CSV部分更新")
+        st.write("`grade` が一致する行だけ対象です。")
+        st.write("更新対象列: `grade_name`, `grade_overview`")
+
+        uploaded_grade_csv = st.file_uploader("グレード定義更新用CSVをアップロード", type=["csv"], key="grade_csv")
+        if uploaded_grade_csv is not None:
+            try:
+                import_grade_df = pd.read_csv(uploaded_grade_csv)
+                st.markdown("#### グレード定義アップロード内容")
+                st.dataframe(import_grade_df, use_container_width=True, hide_index=True)
+
+                grade_csv_memo = st.text_input(
+                    "グレード定義更新メモ",
+                    placeholder="例: PDF文言に合わせて定義修正",
+                    key="grade_csv_memo",
                 )
-                st.success(f"更新完了: {len(change_log)} 件")
-        except Exception as e:
-            st.error(f"CSV取込エラー: {e}")
-
-    st.markdown("---")
-    st.markdown("### グレード定義CSV部分更新")
-    st.write("`grade` が一致する行だけ対象です。")
-    st.write("更新対象列: `grade_name`, `grade_overview`")
-
-    uploaded_grade_csv = st.file_uploader("グレード定義更新用CSVをアップロード", type=["csv"], key="grade_csv")
-    if uploaded_grade_csv is not None:
-        try:
-            import_grade_df = pd.read_csv(uploaded_grade_csv)
-            st.markdown("#### グレード定義アップロード内容")
-            st.dataframe(import_grade_df, use_container_width=True, hide_index=True)
-
-            grade_csv_memo = st.text_input(
-                "グレード定義更新メモ",
-                placeholder="例: PDF文言に合わせて定義修正",
-                key="grade_csv_memo",
-            )
-            if st.button("グレード定義をCSV内容で部分更新する", type="primary"):
-                new_grade_df, grade_change_log = merge_grade_master_update(
-                    st.session_state.grade_master,
-                    import_grade_df,
-                )
-                st.session_state.grade_master = ensure_grade_master(new_grade_df)
-                st.session_state.last_grade_change_log = grade_change_log
-                save_snapshot(
-                    st.session_state.df,
-                    st.session_state.grade_master,
-                    grade_csv_memo or f"grade csv partial update ({len(grade_change_log)} changes)",
-                )
-                st.success(f"更新完了: {len(grade_change_log)} 件")
-        except Exception as e:
-            st.error(f"グレード定義CSV取込エラー: {e}")
+                if st.button("グレード定義をCSV内容で部分更新する", type="primary"):
+                    new_grade_df, grade_change_log = merge_grade_master_update(
+                        st.session_state.grade_master,
+                        import_grade_df,
+                    )
+                    st.session_state.grade_master = ensure_grade_master(new_grade_df)
+                    st.session_state.last_grade_change_log = grade_change_log
+                    save_snapshot(
+                        st.session_state.df,
+                        st.session_state.grade_master,
+                        grade_csv_memo or f"grade csv partial update ({len(grade_change_log)} changes)",
+                    )
+                    st.success(f"更新完了: {len(grade_change_log)} 件")
+            except Exception as e:
+                st.error(f"グレード定義CSV取込エラー: {e}")
 
     st.markdown("### 最終更新ログ（業務マスタ）")
     if not st.session_state.last_change_log.empty:
@@ -1491,13 +1714,17 @@ with tab5:
                     st.dataframe(hist_display_df, use_container_width=True, hide_index=True)
                     st.markdown("#### グレード定義")
                     st.dataframe(hist_grade_master, use_container_width=True, hide_index=True)
-                    if st.button(f"この履歴を復元 #{i}", key=f"restore_{i}"):
+                    if st.button(f"この履歴を復元 #{i}", key=f"restore_{i}", disabled=not can_edit):
                         st.session_state.df = ensure_main_columns(hist_df)
                         st.session_state.grade_master = ensure_grade_master(hist_grade_master)
                         st.success("復元しました。必要なら編集タブ等で再保存してください。")
+        if not can_edit:
+            st.info("ユーザー権限では履歴の復元はできません。閲覧のみ可能です。")
 
 with tab6:
     st.subheader("グレード定義")
+    if not can_edit:
+        st.info("ユーザー権限では編集できません。閲覧のみ可能です。")
     st.write("ここで各グレードの説明欄を管理します。一覧・編集・配布用出力の `グレード定義` はこの内容を引用表示します。")
 
     grade_editor = st.data_editor(
@@ -1505,6 +1732,7 @@ with tab6:
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
+        disabled=not can_edit,
         column_config={
             "grade": st.column_config.TextColumn("グレード", disabled=True),
             "grade_name": st.column_config.TextColumn("グレード名"),
@@ -1518,56 +1746,145 @@ with tab6:
         st.markdown(f"<div class='grade-box'>{row['grade_overview']}</div>", unsafe_allow_html=True)
 
     grade_memo = st.text_input("グレード定義保存メモ", placeholder="例: PDF文言に寄せて修正", key="grade_tab_memo")
-    if st.button("グレード定義を保存", type="primary"):
+    if st.button("グレード定義を保存", type="primary", disabled=not can_edit):
         st.session_state.grade_master = ensure_grade_master(grade_editor)
         save_snapshot(st.session_state.df, st.session_state.grade_master, grade_memo or "grade master update")
         st.success("グレード定義を保存しました。")
 
 with tab7:
     st.subheader("設定 / 初期化")
-    st.write("必要に応じて初期データへ戻せます。")
-    if st.button("初期データに戻す"):
-        st.session_state.df = generate_default()
-        st.session_state.grade_master = get_default_grade_master()
-        st.session_state.last_change_log = pd.DataFrame()
-        st.session_state.last_grade_change_log = pd.DataFrame()
-        st.success("初期データへ戻しました。")
+    if can_edit:
+        st.write("必要に応じて初期データへ戻せます。")
+        if st.button("初期データに戻す"):
+            st.session_state.df = generate_default()
+            st.session_state.grade_master = get_default_grade_master()
+            st.session_state.last_change_log = pd.DataFrame()
+            st.session_state.last_grade_change_log = pd.DataFrame()
+            st.success("初期データへ戻しました。")
+    else:
+        st.info("ユーザー権限では初期化やユーザー管理はできません。")
 
     st.markdown("---")
-    st.markdown("### Streamlit Secrets 例")
+    st.markdown("### ログイン設定")
     st.code(
-        'SUPABASE_URL = "https://xxxx.supabase.co"\nSUPABASE_KEY = "anon public key"',
+        """SUPABASE_URL = \"https://xxxx.supabase.co\"
+SUPABASE_KEY = \"service_role_key or secure REST key\"
+APP_MAX_LOGIN_ATTEMPTS = 5
+APP_LOCK_MINUTES = 30""",
         language="toml",
     )
 
-    st.markdown("### requirements.txt 追記推奨")
-    st.code(
-        "python-docx\nreportlab\nopenpyxl\npandas\nrequests",
-        language="text",
-    )
-
-    st.markdown("### 業務マスタCSV例")
-    st.code(
-        "department,grade,role_summary,kpi\n"
-        '人事課,G6,"採用・勤怠・人事データ入力などの定型実務を担当する。上位者の指示に沿って正確に処理し、必要な情報を遅れなく整備する。社内の基礎的な人事運営を支える役割を担う。","業務達成率、処理件数、正確性、期限遵守率"',
-        language="csv",
-    )
-
-    st.markdown("### グレード定義CSV例")
-    st.code(
-        "grade,grade_name,grade_overview\n"
-        'G6,平社員,"上位者の指示・方針のもとで担当業務を確実に遂行し、組織の一員として基本的な役割と責任を果たすグレード。"',
-        language="csv",
-    )
-
-    st.markdown("### 補足")
+    st.markdown("### 権限仕様")
     st.markdown(
         """
-- 一覧表示は、新人配布用の文面フォーマットでプレビューする設計に変更しています。  
-- `職務概要`  `...` 形式でWord/PDFへ自動整形されます。  
-- `グレード定義` は別タブで管理し、一覧・編集・配布用出力へ引用表示します。  
-- 保存は **Supabase REST API** を使っているため、`supabase-py` の proxy 依存問題を回避できます。  
-- テーブルはスナップショット保存方式です。履歴をそのまま復元できます。  
-- RLS を ON にする場合は、`SELECT` と `INSERT` のポリシーを設定してください。
-"""
+- `admin` : 閲覧・ダウンロード・直接編集・CSV更新・履歴復元・初期化が可能  
+- `viewer` : 閲覧・ダウンロードのみ可能  
+- パスワードは `app_users` テーブルの `password_hash` にハッシュで保存します。  
+- 連続失敗は 5 回まで許可し、6 回目ではなく **5回目失敗時点でロック** します。  
+        """
     )
+
+    if can_edit:
+        st.markdown("---")
+        st.markdown("### ユーザー管理")
+        try:
+            users_df = pd.DataFrame(auth_list_users())
+            if not users_df.empty:
+                display_cols = [c for c in ["username", "display_name", "role", "is_active", "failed_attempts", "locked_until", "last_login_at"] if c in users_df.columns]
+                st.dataframe(users_df[display_cols], use_container_width=True, hide_index=True)
+            else:
+                st.info("まだユーザーが登録されていません。")
+        except Exception as e:
+            st.error(f"ユーザー一覧取得エラー: {e}")
+            users_df = pd.DataFrame()
+
+        with st.expander("新規ユーザー追加", expanded=False):
+            with st.form("create_user_form"):
+                new_username = st.text_input("ユーザー名")
+                new_display_name = st.text_input("表示名")
+                new_role = st.selectbox("権限", ["viewer", "admin"])
+                new_password = st.text_input("初期パスワード", type="password")
+                new_active = st.checkbox("有効", value=True)
+                create_user_submit = st.form_submit_button("ユーザーを追加")
+            if create_user_submit:
+                try:
+                    if not new_username.strip() or not new_password:
+                        st.error("ユーザー名と初期パスワードは必須です。")
+                    elif auth_get_user(new_username.strip()):
+                        st.error("同じユーザー名が既に存在します。")
+                    else:
+                        auth_create_user(
+                            username=new_username,
+                            password=new_password,
+                            role=new_role,
+                            display_name=new_display_name or new_username,
+                            is_active=new_active,
+                        )
+                        st.success("ユーザーを追加しました。")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"ユーザー追加エラー: {e}")
+
+        with st.expander("既存ユーザー操作", expanded=False):
+            if users_df.empty:
+                st.info("操作対象のユーザーがまだありません。")
+            else:
+                target_username = st.selectbox("対象ユーザー", users_df["username"].tolist(), key="target_user_select")
+                selected_user = users_df[users_df["username"] == target_username].iloc[0].to_dict()
+                with st.form("manage_user_form"):
+                    updated_display_name = st.text_input("表示名", value=str(selected_user.get("display_name", "")))
+                    updated_role = st.selectbox(
+                        "権限",
+                        ["viewer", "admin"],
+                        index=0 if str(selected_user.get("role", "viewer")) == "viewer" else 1,
+                    )
+                    updated_is_active = st.checkbox("有効", value=bool(selected_user.get("is_active", True)))
+                    reset_password = st.text_input("新しいパスワード（変更時のみ入力）", type="password")
+                    col_a, col_b = st.columns(2)
+                    save_user_submit = col_a.form_submit_button("ユーザー情報を更新")
+                    unlock_submit = col_b.form_submit_button("失敗回数とロックを解除")
+                try:
+                    if save_user_submit:
+                        payload = {
+                            "display_name": updated_display_name.strip() or target_username,
+                            "role": updated_role,
+                            "is_active": updated_is_active,
+                            "updated_at": iso_utc(utc_now()),
+                        }
+                        if reset_password:
+                            payload["password_hash"] = hash_password(reset_password)
+                            payload["failed_attempts"] = 0
+                            payload["locked_until"] = None
+                        auth_update_user(target_username, payload)
+                        st.success("ユーザー情報を更新しました。")
+                        if target_username == auth_user.get("username"):
+                            st.session_state.auth_user = {
+                                **auth_user,
+                                "display_name": payload["display_name"],
+                                "role": payload["role"],
+                            }
+                        st.rerun()
+                    if unlock_submit:
+                        auth_update_user(
+                            target_username,
+                            {
+                                "failed_attempts": 0,
+                                "locked_until": None,
+                                "updated_at": iso_utc(utc_now()),
+                            },
+                        )
+                        st.success("失敗回数とロックを解除しました。")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"ユーザー更新エラー: {e}")
+
+        st.markdown("---")
+        st.markdown("### パスワードハッシュ生成（SQL手動投入用）")
+        with st.form("hash_generator_form"):
+            plain_password = st.text_input("平文パスワード", type="password")
+            generate_hash_submit = st.form_submit_button("ハッシュ生成")
+        if generate_hash_submit:
+            if not plain_password:
+                st.error("パスワードを入力してください。")
+            else:
+                st.code(hash_password(plain_password), language="text")
