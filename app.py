@@ -9,6 +9,21 @@ import pandas as pd
 import requests
 import streamlit as st
 
+import hashlib
+import hmac
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return hmac.compare_digest(
+        hash_password(password),
+        str(password_hash)
+    )
+
+def normalize_username(username: str) -> str:
+    return str(username).strip()
+
 st.set_page_config(
     page_title="Job Matrix Manager",
     layout="wide",
@@ -241,7 +256,13 @@ def login_user(username: str, password: str):
     if lock_minutes > 0:
         return False, f"ログインに連続失敗したためロック中です。{lock_minutes}分後に再試行してください。"
 
-    if not verify_password(password, str(user.get("password_hash", ""))):
+    if not verify_password(input_password, user.get("password_hash", "")):
+    st.error("ユーザー名またはパスワードが違います。")
+
+    # 失敗回数カウント（既存処理あればそのまま）
+    update_failed_attempts(user["username"])
+
+    st.stop():
         current_attempts = int(user.get("failed_attempts") or 0) + 1
         payload = {
             "failed_attempts": current_attempts,
@@ -273,7 +294,12 @@ def login_user(username: str, password: str):
     st.session_state.auth_user = session_user
     return True, f"{session_user['display_name']} さんでログインしました。"
 
+    reset_failed_attempts(user["username"])
 
+    st.session_state.logged_in = True
+    st.session_state.username = user["username"]
+    st.session_state.role = user["role"]
+    
 def logout_user():
     st.session_state.auth_user = None
 
