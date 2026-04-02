@@ -25,22 +25,32 @@ div[data-testid="stMetric"] {border: 1px solid #d9dde3; padding: 0.8rem; border-
 )
 
 st.title("Job Matrix Manager")
-st.caption("部門・グレード別の職務定義を管理し、CSV / Excel / Word / PDF 出力できます。管理人 / ユーザー権限、5回失敗ロック対応。")
+st.caption("部門・グレード別の職務定義を管理し、CSV / Excel / Word / PDF 出力できます。専用ログイン、5回失敗ロック、セッション期限対応。")
 
 # =========================
 # SECRETS / REST SETTINGS
 # =========================
 try:
-    SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    SUPABASE_URL = str(
+        st.secrets.get("JM_SUPABASE_URL")
+        or st.secrets.get("SUPABASE_URL")
+    ).rstrip("/")
+    SUPABASE_KEY = str(
+        st.secrets.get("JM_SUPABASE_SERVICE_ROLE_KEY")
+        or st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+        or st.secrets.get("SUPABASE_KEY")
+    )
 except Exception:
-    st.error("Streamlit secrets に SUPABASE_URL / SUPABASE_KEY が設定されていません。")
+    st.error("Streamlit secrets に JM_SUPABASE_URL / JM_SUPABASE_SERVICE_ROLE_KEY（または互換キー）が設定されていません。")
     st.stop()
 
-APP_NAME = st.secrets.get("APP_NAME", "Job Matrix Manager")
-SECRET_KEY = st.secrets.get("SECRET_KEY", "change-this-secret")
-LOCK_MAX_ATTEMPTS = 5
-LOCK_MINUTES = 30
+APP_NAME = st.secrets.get("JM_APP_NAME", st.secrets.get("APP_NAME", "Job Matrix Manager"))
+USERS_TABLE = st.secrets.get("JM_USERS_TABLE", "job_matrix_users")
+SNAPSHOTS_TABLE = st.secrets.get("JM_SNAPSHOTS_TABLE", "job_matrix_snapshots")
+LOGIN_ID_LABEL = st.secrets.get("JM_LOGIN_ID_LABEL", "ユーザー名")
+LOCK_MAX_ATTEMPTS = int(st.secrets.get("JM_LOCK_MAX_ATTEMPTS", 5))
+LOCK_MINUTES = int(st.secrets.get("JM_LOCK_MINUTES", 30))
+SESSION_TIMEOUT_HOURS = int(st.secrets.get("JM_SESSION_TIMEOUT_HOURS", 12))
 
 
 def now_utc() -> datetime:
@@ -120,7 +130,7 @@ def normalize_username(username: str) -> str:
 
 def get_user_by_username(username: str) -> Optional[dict]:
     users = rest_get(
-        "app_users",
+        USERS_TABLE,
         params={
             "select": "*",
             "username": f"eq.{normalize_username(username)}",
@@ -150,7 +160,7 @@ def is_user_locked(user: dict) -> tuple[bool, Optional[datetime]]:
 
 
 def update_user_row(username: str, payload: dict):
-    return rest_patch("app_users", payload, params={"username": f"eq.{normalize_username(username)}"})
+    return rest_patch(USERS_TABLE, payload, params={"username": f"eq.{normalize_username(username)}"})
 
 
 def register_failed_attempt(username: str, current_failed_attempts: int):
@@ -171,13 +181,44 @@ def clear_failed_attempts(username: str):
         },
     )
 
+def session_expired() -> bool:
+    expires_at = st.session_state.get("auth_expires_at")
+    if not expires_at:
+        return True
+    parsed = parse_locked_until(expires_at)
+    if parsed is None:
+        return True
+    return parsed <= now_utc()
+
+
+def clear_auth_session():
+    for key in [
+        "auth_user",
+        "auth_expires_at",
+        "df",
+        "grade_master",
+        "last_change_log",
+        "last_grade_change_log",
+    ]:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def set_auth_session(user: dict):
+    st.session_state.auth_user = {
+        "username": user["username"],
+        "display_name": user.get("display_name") or user["username"],
+        "role": user.get("role", "viewer"),
+    }
+    st.session_state.auth_expires_at = (now_utc() + timedelta(hours=SESSION_TIMEOUT_HOURS)).isoformat()
+
 
 def require_login() -> dict:
     st.subheader("ログイン")
     st.caption("管理人は編集可能、ユーザーは閲覧・ダウンロードのみです。パスワード5回失敗で30分ロックされます。")
 
     with st.form("login_form"):
-        username = st.text_input("ユーザー名")
+        username = st.text_input(LOGIN_ID_LABEL)
         password = st.text_input("パスワード", type="password")
         submitted = st.form_submit_button("ログイン", type="primary")
 
@@ -208,11 +249,7 @@ def require_login() -> dict:
         st.stop()
 
     clear_failed_attempts(user["username"])
-    st.session_state.auth_user = {
-        "username": user["username"],
-        "display_name": user.get("display_name") or user["username"],
-        "role": user.get("role", "viewer"),
-    }
+    set_auth_session(user)
     st.rerun()
 
 
@@ -592,7 +629,7 @@ def dataframe_to_excel_bytes(df: pd.DataFrame, grade_master_df: pd.DataFrame) ->
     export_df = attach_grade_overview(df.copy(), grade_master_df.copy())
     export_df["handout_preview"] = export_df.apply(make_handout_text, axis=1)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        export_df.to_excel(writer, index=False, sheet_name="job_matrix")
+        export_df.to_excel(writer, index=False, sheet_name=SNAPSHOTS_TABLE)
         ensure_grade_master(grade_master_df.copy()).to_excel(writer, index=False, sheet_name="grade_master")
     output.seek(0)
     return output.getvalue()
@@ -768,11 +805,11 @@ def save_snapshot(main_df: pd.DataFrame, grade_master_df: pd.DataFrame, memo: st
         "memo": memo,
         "created_at": now_utc().isoformat(),
     }
-    rest_post("job_matrix", payload)
+    rest_post(SNAPSHOTS_TABLE, payload)
 
 
 def load_history() -> list:
-    return rest_get("job_matrix", params={"select": "*", "order": "created_at.desc"})
+    return rest_get(SNAPSHOTS_TABLE, params={"select": "*", "order": "created_at.desc"})
 
 
 def load_latest_snapshot():
@@ -789,7 +826,7 @@ def load_latest_snapshot():
 if "connection_ok" not in st.session_state:
     try:
         _ = load_history()
-        _ = rest_get("app_users", params={"select": "username", "limit": 1})
+        _ = rest_get(USERS_TABLE, params={"select": "username", "limit": 1})
         st.session_state.connection_ok = True
     except Exception as e:
         st.session_state.connection_ok = False
@@ -797,11 +834,17 @@ if "connection_ok" not in st.session_state:
 
 if not st.session_state.connection_ok:
     st.error(f"Supabase REST 接続失敗: {st.session_state.get('connection_error', 'Unknown error')}")
-    st.info("Secrets、Supabaseテーブル、RLSポリシー、service role key を確認してください。")
+    st.info("JM_* 系の Secrets、専用テーブル、service role key を確認してください。")
     st.stop()
+
+if "auth_user" in st.session_state and session_expired():
+    clear_auth_session()
+    st.warning("セッションの有効期限が切れたため、再ログインしてください。")
 
 if "auth_user" not in st.session_state:
     require_login()
+else:
+    st.session_state.auth_expires_at = (now_utc() + timedelta(hours=SESSION_TIMEOUT_HOURS)).isoformat()
 
 auth_user = st.session_state["auth_user"]
 is_admin = auth_user.get("role") == "admin"
@@ -810,6 +853,7 @@ with st.sidebar:
     st.markdown(f"### {APP_NAME}")
     st.write(f"ログイン中: **{auth_user.get('display_name')}**")
     st.write(f"権限: **{auth_user.get('role')}**")
+    st.caption(f"セッション有効時間: {SESSION_TIMEOUT_HOURS} 時間")
     if st.button("ログアウト"):
         for key in ["auth_user", "df", "grade_master", "last_change_log", "last_grade_change_log"]:
             if key in st.session_state:
@@ -1040,23 +1084,24 @@ with tab7:
     st.subheader("設定")
     if is_admin:
         st.markdown("### ユーザー管理")
-        users_df = pd.DataFrame(rest_get("app_users", params={"select": "id,username,display_name,role,is_active,failed_attempts,locked_until,created_at,updated_at", "order": "created_at.asc"}))
+        st.caption(f"このアプリは専用のログインテーブル `{USERS_TABLE}` を使います。別アプリと分けて運用できます。")
+        users_df = pd.DataFrame(rest_get(USERS_TABLE, params={"select": "id,username,display_name,role,is_active,failed_attempts,locked_until,created_at,updated_at", "order": "created_at.asc"}))
         if not users_df.empty:
             st.dataframe(users_df, use_container_width=True, hide_index=True)
         with st.expander("新規ユーザー追加"):
             with st.form("create_user_form"):
-                new_username = st.text_input("ユーザー名")
+                new_username = st.text_input(LOGIN_ID_LABEL)
                 new_display_name = st.text_input("表示名")
                 new_role = st.selectbox("権限", ["viewer", "admin"])
                 new_password = st.text_input("初期パスワード", type="password")
                 created = st.form_submit_button("作成", type="primary")
             if created:
                 if not new_username or not new_password:
-                    st.error("ユーザー名とパスワードは必須です。")
+                    st.error(f"{LOGIN_ID_LABEL} とパスワードは必須です。")
                 elif get_user_by_username(new_username):
-                    st.error("そのユーザー名は既に存在します。")
+                    st.error(f"その{LOGIN_ID_LABEL}は既に存在します。")
                 else:
-                    rest_post("app_users", {
+                    rest_post(USERS_TABLE, {
                         "username": normalize_username(new_username),
                         "display_name": new_display_name or normalize_username(new_username),
                         "role": new_role,
@@ -1071,7 +1116,7 @@ with tab7:
                     st.rerun()
 
         with st.expander("既存ユーザー更新 / ロック解除 / パスワード再設定"):
-            user_options = [u["username"] for u in rest_get("app_users", params={"select": "username", "order": "username.asc"})]
+            user_options = [u["username"] for u in rest_get(USERS_TABLE, params={"select": "username", "order": "username.asc"})]
             target_username = st.selectbox("対象ユーザー", user_options)
             target_user = get_user_by_username(target_username) if target_username else None
             if target_user:
@@ -1098,7 +1143,7 @@ with tab7:
                         st.success("ロック解除しました。")
                         st.rerun()
                     if target_username != auth_user.get("username") and st.button("このユーザーを削除"):
-                        rest_delete("app_users", params={"username": f"eq.{target_username}"})
+                        rest_delete(USERS_TABLE, params={"username": f"eq.{target_username}"})
                         st.success("削除しました。")
                         st.rerun()
     else:
